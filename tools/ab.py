@@ -149,7 +149,14 @@ def gate(base, new, args):
                      (new["decode_tps"], base["decode_tps"], 1 - args.decode_slack))
     for name, b in base["cold"].items():
         n = new["cold"].get(name)
-        if n and n["seconds"] > b["seconds"] * (1 + args.ttft_slack):
+        if not n:
+            continue
+        # a cold number is only comparable when both runs really prefilled it
+        if b.get("cached_tokens", 0) or n.get("cached_tokens", 0):
+            print("note: cold %s skipped (cache hit on one side: baseline %d, new %d)" %
+                  (name, b.get("cached_tokens", 0), n.get("cached_tokens", 0)))
+            continue
+        if n["seconds"] > b["seconds"] * (1 + args.ttft_slack):
             fails.append("cold %s %.1fs > %.1fs x %.2f" % (name, n["seconds"], b["seconds"], 1 + args.ttft_slack))
     if new["resume"]["again_s"] > base["resume"]["again_s"] * (1 + args.ttft_slack):
         fails.append("resume %.2fs > %.2fs" % (new["resume"]["again_s"], base["resume"]["again_s"]))
