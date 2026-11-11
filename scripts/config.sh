@@ -108,6 +108,11 @@ CONTEXT="${CONTEXT:-262144}"
 # (21.9 GiB); 8 streams at full windows do not (35 GiB), they share the pool. 5 is the default for that reason.
 PARALLEL="${PARALLEL:-5}"
 # MTP: up to this many drafts a round (the engine's default is 6; drafts are checked, so replies match serial decoding).
+# Rows a prompt pass holds (TensorFold 1.2.6 reads its own TF_FLASHNEXT_CHUNK; 1.1.4 took the flag). Measured on a GB10
+# with fp8 KV and vision: 1536 rows cold-prefills an 8K prompt at 1,967 t/s, 3072 at 2,132, 4096 at 2,237 and 8192 at
+# 2,289, while the prompt cache shrinks from 15.5 to 11.4 GiB. 4096 is the balance: prefill within 1-4% of the 1.1.4
+# recipe and still ~12 GiB of cache.
+export TF_FLASHNEXT_CHUNK="${TF_FLASHNEXT_CHUNK:-4096}"
 export TF_FLASHNEXT_DRAFTS="${TF_FLASHNEXT_DRAFTS:-6}"
 # Sampled requests (temperature > 0, what chat clients send) in the batched draft pass, with the top candidates picked on the GPU
 # (patches 0007, 0008, 0011), all lanes' n-gram rows gathered in one pass (0010) and the host draws run on worker threads (0011).
