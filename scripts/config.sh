@@ -64,7 +64,7 @@ unset _pin
 # applied (git apply in the checkout's root), with Zig ZIG_VERSION. Only the Zig build goes into the image, plus the two
 # image decoders the engine wants (libjpeg-turbo for JPEG, libwebp's decoder for WebP), built from pinned sources.
 TF_REPO="${TF_REPO:-https://github.com/ashhart/TensorFold.git}"
-TF_REF="${TF_REF:-fbbc0f30c3c66eef324931f1d4711cd3c303219b}"   # v1.2.6
+TF_REF="${TF_REF:-6e9af930261a88bb28ac0bfb157ce8e57e9eea07}"   # v1.2.6
 ZIG_VERSION="${ZIG_VERSION:-0.17.0}"
 ZIG_SHA256="${ZIG_SHA256:-9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8}"
 BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.07-py3}"
