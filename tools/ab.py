@@ -3,11 +3,14 @@
 
 Runs the same prompts at temperature 0 against any OpenAI-compatible endpoint,
 records timings plus a hash of the replies, and can refuse a regression against
-a saved baseline. Deterministic by construction: fixed prompts, greedy decoding,
-fixed token budgets; only the clock varies.
+a saved baseline.
 
-  tools/ab.py --url http://127.0.0.1:8003/v1 --label tf-1.1.4 --out baseline.json
-  tools/ab.py --url http://127.0.0.1:8004/v1 --label tf-1.2.6 --baseline baseline.json
+Deterministic by construction: fixed prompts that share no prefix (so no size
+inherits another's cache), greedy decoding, thinking off, fixed token budgets.
+Only the clock varies.
+
+  tools/ab.py --url http://127.0.0.1:8003/v1 --label tf-1.1.4 --out base.json
+  tools/ab.py --url http://127.0.0.1:8004/v1 --label tf-1.2.6 --baseline base.json
 
 Exit status 1 when --baseline is given and any gate fails: the reply hash
 differs, decode drops more than --decode-slack, or a TTFT rises more than
@@ -29,20 +32,24 @@ CORPUS = (
     "lights of the village come on one by one. "
 )
 
-# ~4 characters a token on this corpus; the exact count comes back in usage.
-SIZES = {"8k": 32_000, "16k": 64_000, "64k": 256_000, "120k": 480_000}
+# Tokens a run targets; the corpus tokenizes at roughly four characters a token.
+SIZES = {"2k": 2_000, "8k": 8_000, "32k": 32_000, "120k": 120_000}
 
 
-def prompt(chars: int) -> str:
-    return (CORPUS * (chars // len(CORPUS) + 1))[:chars]
+def prompt(tokens: int) -> str:
+    """A prompt no other size shares a prefix with, so every pass is cold."""
+    head = "Session %d of the field notes.\n" % tokens
+    chars = max(tokens * 4 - len(head), 1024)
+    return head + (CORPUS * (chars // len(CORPUS) + 1))[:chars]
 
 
-def ask(url, model, messages, max_tokens, timeout=1800):
+def ask(url, model, messages, max_tokens, timeout=3600):
     body = json.dumps({
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions", body,
                                  {"Content-Type": "application/json"})
@@ -54,19 +61,19 @@ def ask(url, model, messages, max_tokens, timeout=1800):
     return {
         "seconds": round(total, 2),
         "prompt_tokens": reply["usage"]["prompt_tokens"],
+        "cached_tokens": (reply["usage"].get("prompt_tokens_details") or {}).get("cached_tokens", 0),
         "completion_tokens": reply["usage"]["completion_tokens"],
         "text": text,
     }
 
 
 def decode_rate(url, model, tokens=256):
-    # a small prompt so the reply is nearly all decode
-    r = ask(url, model, [{"role": "user", "content": "Count from 1 upwards, one number per line."}], tokens)
-    return round(r["completion_tokens"] / r["seconds"], 1), r["text"]
+    r = ask(url, model, [{"role": "user", "content": "Write the word alpha two hundred times, separated by single spaces, then stop."}], tokens)
+    return round(r["completion_tokens"] / r["seconds"], 1), r["text"], r
 
 
-def agents(url, model, n, size="16k", max_tokens=16):
-    """n concurrent follow-ups on one prefix: the shape of Ash's 16-agent claim."""
+def agents(url, model, n, size="8k", max_tokens=16):
+    """n concurrent follow-ups on one prefix: the shape of the 1.2.6 announcement."""
     prefix = prompt(SIZES[size])
     warm = [{"role": "user", "content": prefix + "\nReply with the word: ready"}]
     ask(url, model, warm, 4)
@@ -87,44 +94,49 @@ def agents(url, model, n, size="16k", max_tokens=16):
         t.start()
     for t in threads:
         t.join()
-    wall = time.time() - started
     return {
         "n": n,
         "median_followup_s": round(statistics.median(times), 2) if times else None,
-        "wall_s": round(wall, 1),
+        "wall_s": round(time.time() - started, 1),
         "errors": errors,
     }
 
 
 def run(url, model, args):
-    out = {"url": url, "model": model, "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    out = {"label": args.label, "url": url, "model": model,
+           "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     replies = []
 
     cold = {}
-    for name, chars in SIZES.items():
-        if args.skip_large and name in ("64k", "120k"):
+    for name, tokens in SIZES.items():
+        if args.skip_large and name in ("32k", "120k"):
             continue
-        p = prompt(chars)
-        r = ask(url, model, [{"role": "user", "content": p + "\nReply with the word: ready"}], 4)
-        cold[name] = {"prompt_tokens": r["prompt_tokens"], "seconds": r["seconds"],
-                      "tokens_per_s": round(r["prompt_tokens"] / r["seconds"], 1)}
+        r = ask(url, model, [{"role": "user", "content": prompt(tokens) + "\nReply with the word: ready"}], 4)
+        cold[name] = {
+            "prompt_tokens": r["prompt_tokens"],
+            "cached_tokens": r["cached_tokens"],
+            "seconds": r["seconds"],
+            "prefill_tps": round((r["prompt_tokens"] - r["cached_tokens"]) / r["seconds"], 1),
+        }
         replies.append(r["text"])
 
-    p = prompt(SIZES["16k"])
+    p = prompt(SIZES["8k"])
     base = [{"role": "user", "content": p + "\nReply with the word: ready"}]
     first = ask(url, model, base, 4)
     again = ask(url, model, base + [{"role": "assistant", "content": first["text"]},
                                     {"role": "user", "content": "Say: again"}], 4)
     replies += [first["text"], again["text"]]
 
-    rate, text = decode_rate(url, model)
+    rate, text, dec = decode_rate(url, model)
     replies.append(text)
 
     out["cold"] = cold
-    out["resume"] = {"first_s": first["seconds"], "again_s": again["seconds"]}
+    out["resume"] = {"first_s": first["seconds"], "again_s": again["seconds"],
+                     "cached_tokens": again["cached_tokens"]}
     out["decode_tps"] = rate
+    out["decode"] = {"completion_tokens": dec["completion_tokens"], "seconds": dec["seconds"]}
     out["agents"] = agents(url, model, args.agents)
-    out["hash"] = hashlib.sha256("\x00".join(replies).encode()).hexdigest()
+    out["hash"] = hashlib.sha256("\x1f".join(replies).encode()).hexdigest()
     return out
 
 
@@ -153,7 +165,7 @@ def main():
     ap.add_argument("--model", default="qwen3.8-flash-next")
     ap.add_argument("--label", default="")
     ap.add_argument("--out")
-    ap.add_argument("--baseline", help="a previous run's JSON; gate against it")
+    ap.add_argument("--baseline")
     ap.add_argument("--agents", type=int, default=16)
     ap.add_argument("--skip-large", action="store_true")
     ap.add_argument("--decode-slack", type=float, default=0.05)
@@ -161,8 +173,6 @@ def main():
     args = ap.parse_args()
 
     out = run(args.url, args.model, args)
-    if args.label:
-        out["label"] = args.label
     print(json.dumps(out, indent=2))
     if args.out:
         with open(args.out, "w") as f:

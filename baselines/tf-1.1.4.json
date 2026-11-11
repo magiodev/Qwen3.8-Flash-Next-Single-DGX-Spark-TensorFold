@@ -1,0 +1,37 @@
+{
+  "label": "tf-1.1.4-mia",
+  "url": "http://127.0.0.1:8003/v1",
+  "model": "qwen3.8-flash-next",
+  "when": "2026-11-11T17:50:19Z",
+  "cold": {
+    "2k": {
+      "prompt_tokens": 1735,
+      "cached_tokens": 1728,
+      "seconds": 0.16,
+      "prefill_tps": 43.8
+    },
+    "8k": {
+      "prompt_tokens": 6868,
+      "cached_tokens": 6861,
+      "seconds": 0.16,
+      "prefill_tps": 43.8
+    }
+  },
+  "resume": {
+    "first_s": 0.16,
+    "again_s": 0.18,
+    "cached_tokens": 6879
+  },
+  "decode_tps": 100.4,
+  "decode": {
+    "completion_tokens": 256,
+    "seconds": 2.55
+  },
+  "agents": {
+    "n": 16,
+    "median_followup_s": 1.36,
+    "wall_s": 2.6,
+    "errors": 0
+  },
+  "hash": "ac7aedb80b8546682de3b22aa81675efcc4c1822104f4583956f0ff006fe14ee"
+}
