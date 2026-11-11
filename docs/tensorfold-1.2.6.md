@@ -55,11 +55,12 @@ allocation. One missing template argument, both entry points.
 
 ## What is not here
 
-`patches/hold/` keeps the fourteen remaining 1.1.4 patches for reference. Five of
-them (sampled heads, keep-late, shared side, GDN lanes, draft confidence) now
-exist upstream as the same environment variables. The rest are prompt/MoE kernel
-work that either duplicates upstream's newer tiles or needs a numerics review
-before it can be trusted on 1.2.6.
+The fourteen remaining 1.1.4 patches are not carried. Five of them (sampled
+heads, keep-late, shared side, GDN lanes, draft confidence) exist upstream as the
+same environment variables; the rest are prompt/MoE kernel work that duplicates
+upstream's newer tiles or needs a numerics review before it can be trusted on
+1.2.6. The 1.1.4 series stays in Mia's repository and in this repository's
+history.
 
 ## Reproducing
 
