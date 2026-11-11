@@ -1,37 +1,44 @@
 {
-  "label": "tf-1.1.4-mia",
+  "label": "tf-1.1.4",
   "url": "http://127.0.0.1:8003/v1",
   "model": "qwen3.8-flash-next",
-  "when": "2026-11-11T17:50:19Z",
+  "schema": 2,
+  "when": "2026-11-11T21:57:36Z",
+  "sizes": [
+    "2k",
+    "8k"
+  ],
+  "agents_n": 16,
   "cold": {
     "2k": {
-      "prompt_tokens": 1735,
-      "cached_tokens": 1728,
-      "seconds": 0.16,
-      "prefill_tps": 43.8
+      "prompt_tokens": 1770,
+      "cached_tokens": 2,
+      "seconds": 1.03,
+      "prefill_tps": 1716.5
     },
     "8k": {
-      "prompt_tokens": 6868,
-      "cached_tokens": 6861,
-      "seconds": 0.16,
-      "prefill_tps": 43.8
+      "prompt_tokens": 6902,
+      "cached_tokens": 2,
+      "seconds": 3.06,
+      "prefill_tps": 2254.9
     }
   },
   "resume": {
-    "first_s": 0.16,
-    "again_s": 0.18,
-    "cached_tokens": 6879
+    "first_s": 3.07,
+    "again_s": 0.31,
+    "cached_tokens": 6886
   },
-  "decode_tps": 100.4,
-  "decode": {
-    "completion_tokens": 256,
-    "seconds": 2.55
-  },
+  "decode_tps": 99.6,
   "agents": {
     "n": 16,
-    "median_followup_s": 1.36,
-    "wall_s": 2.6,
+    "median_followup_s": 2.17,
+    "wall_s": 4.1,
     "errors": 0
   },
-  "hash": "ac7aedb80b8546682de3b22aa81675efcc4c1822104f4583956f0ff006fe14ee"
+  "hashes": {
+    "2k": "09d120afd33eef2405adaedb16aa5e6a80446ceb1efa55f812f650c23d94090e",
+    "8k": "09d120afd33eef2405adaedb16aa5e6a80446ceb1efa55f812f650c23d94090e",
+    "resume": "09d120afd33eef2405adaedb16aa5e6a80446ceb1efa55f812f650c23d94090e",
+    "decode": "d7150dc058d54d54a7660356fb596b54fddfcda9ad33ebbac0fb89c2bd3fd1fd"
+  }
 }

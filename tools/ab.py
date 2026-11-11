@@ -2,24 +2,28 @@
 """A reproducible A/B gate for Flash Next lanes.
 
 Runs the same prompts at temperature 0 against any OpenAI-compatible endpoint,
-records timings plus a hash of the replies, and can refuse a regression against
+records timings plus a hash per measurement, and can refuse a regression against
 a saved baseline.
 
-Deterministic by construction: fixed prompts that share no prefix (so no size
-inherits another's cache), greedy decoding, thinking off, fixed token budgets.
-Only the clock varies.
+Determinism and coldness pull against each other: a fixed prompt is a cached
+prompt on the second run. So each size's prompt carries a fixed needle (the hash
+sees context, not just a constant reply) and the cold timing run uses a per-run
+nonce in the head, which leaves the answer unchanged but guarantees the pass
+really prefilled. A cold entry that still reports cached tokens is a failure,
+not a skip.
 
   tools/ab.py --url http://127.0.0.1:8003/v1 --label tf-1.1.4 --out base.json
   tools/ab.py --url http://127.0.0.1:8004/v1 --label tf-1.2.6 --baseline base.json
 
-Exit status 1 when --baseline is given and any gate fails: the reply hash
-differs, decode drops more than --decode-slack, or a TTFT rises more than
---ttft-slack.
+Exit status 1 when --baseline fails: a reply hash changed, decode dropped past
+--decode-slack, a timing rose past --latency-slack, or a measurement was not
+actually cold.
 """
 
 import argparse
 import hashlib
 import json
+import secrets
 import statistics
 import sys
 import threading
@@ -32,34 +36,48 @@ CORPUS = (
     "lights of the village come on one by one. "
 )
 
-# Tokens a run targets; the corpus tokenizes at roughly four characters a token.
+# The answer to this is a fixed string, so the reply hash stays stable across
+# runs while depending on the prompt being read to that depth.
+NEEDLE = "The maintenance passphrase is QX-7734."
+NEEDLE_AT = 0.8
+
+# Tokens a size targets; the corpus tokenizes at roughly four characters a token.
 SIZES = {"2k": 2_000, "8k": 8_000, "32k": 32_000, "120k": 120_000}
 
 
-def prompt(tokens: int) -> str:
-    """A prompt no other size shares a prefix with, so every pass is cold."""
-    head = "Session %d of the field notes.\n" % tokens
-    chars = max(tokens * 4 - len(head), 1024)
-    return head + (CORPUS * (chars // len(CORPUS) + 1))[:chars]
+def body(tokens: int) -> str:
+    chars = max(tokens * 4, 2048)
+    text = (CORPUS * (chars // len(CORPUS) + 1))[:chars]
+    at = int(len(text) * NEEDLE_AT)
+    return text[:at] + " " + NEEDLE + " " + text[at:]
 
 
-def ask(url, model, messages, max_tokens, timeout=3600):
-    body = json.dumps({
+def prompt(tokens: int, nonce: str) -> str:
+    """A prompt no other size or run shares a prefix with, carrying the needle."""
+    return "Session %s of the field notes.\n" % nonce + body(tokens)
+
+
+def ask(url, model, messages, max_tokens, timeout=1800):
+    payload = json.dumps({
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0,
         "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
-    req = urllib.request.Request(url.rstrip("/") + "/chat/completions", body,
+    req = urllib.request.Request(url.rstrip("/") + "/chat/completions", payload,
                                  {"Content-Type": "application/json"})
-    start = time.time()
+    start = time.monotonic()
     with urllib.request.urlopen(req, timeout=timeout) as f:
         reply = json.load(f)
-    total = time.time() - start
-    text = reply["choices"][0]["message"].get("content") or ""
+    elapsed = time.monotonic() - start
+    message = reply["choices"][0]["message"]
+    text = (message.get("content") or "").strip()
+    if not text:
+        raise RuntimeError("empty content (thinking not disabled? finish=%s)"
+                           % reply["choices"][0].get("finish_reason"))
     return {
-        "seconds": round(total, 2),
+        "seconds": round(elapsed, 2),
         "prompt_tokens": reply["usage"]["prompt_tokens"],
         "cached_tokens": (reply["usage"].get("prompt_tokens_details") or {}).get("cached_tokens", 0),
         "completion_tokens": reply["usage"]["completion_tokens"],
@@ -68,100 +86,117 @@ def ask(url, model, messages, max_tokens, timeout=3600):
 
 
 def decode_rate(url, model, tokens=256):
-    r = ask(url, model, [{"role": "user", "content": "Write the word alpha two hundred times, separated by single spaces, then stop."}], tokens)
-    return round(r["completion_tokens"] / r["seconds"], 1), r["text"], r
+    r = ask(url, model, [{"role": "user", "content":
+                          "Write the word alpha two hundred times, separated by single spaces, then stop."}], tokens)
+    if r["completion_tokens"] != tokens:
+        raise RuntimeError("decode run stopped at %d of %d tokens" % (r["completion_tokens"], tokens))
+    return round(r["completion_tokens"] / r["seconds"], 1), r["text"]
 
 
 def agents(url, model, n, size="8k", max_tokens=16):
-    """n concurrent follow-ups on one prefix: the shape of the 1.2.6 announcement."""
-    prefix = prompt(SIZES[size])
+    """n concurrent follow-ups on one round's prompt: the shape of the 1.2.6 announcement."""
+    prefix = prompt(SIZES[size], secrets.token_hex(8))
     warm = [{"role": "user", "content": prefix + "\nReply with the word: ready"}]
     ask(url, model, warm, 4)
-    times, errors = [], 0
+    times, errors = [], []
 
     def one(i):
-        nonlocal errors
         try:
             m = warm + [{"role": "assistant", "content": "ready"},
                         {"role": "user", "content": "Agent %d: reply with the word: done" % i}]
-            times.append(ask(url, model, m, max_tokens)["seconds"])
-        except Exception:
-            errors += 1
+            times.append(ask(url, model, m, max_tokens, timeout=300)["seconds"])
+        except Exception as err:
+            errors.append(str(err))
 
     threads = [threading.Thread(target=one, args=(i,)) for i in range(n)]
-    started = time.time()
+    started = time.monotonic()
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(360)
     return {
         "n": n,
         "median_followup_s": round(statistics.median(times), 2) if times else None,
-        "wall_s": round(time.time() - started, 1),
-        "errors": errors,
+        "wall_s": round(time.monotonic() - started, 1),
+        "errors": len(errors),
     }
 
 
 def run(url, model, args):
-    out = {"label": args.label, "url": url, "model": model,
-           "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    replies = []
+    out = {"label": args.label, "url": url, "model": model, "schema": 2,
+           "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "sizes": [s for s in SIZES if not (args.skip_large and s in ("32k", "120k"))],
+           "agents_n": args.agents}
+    hashes = {}
 
     cold = {}
     for name, tokens in SIZES.items():
         if args.skip_large and name in ("32k", "120k"):
             continue
-        r = ask(url, model, [{"role": "user", "content": prompt(tokens) + "\nReply with the word: ready"}], 4)
+        # a fresh nonce a run: the pass is cold whatever state the server is in
+        r = ask(url, model, [{"role": "user", "content": prompt(tokens, secrets.token_hex(8)) +
+                              "\nWhat is the maintenance passphrase? Answer with the code only."}], 16)
         cold[name] = {
             "prompt_tokens": r["prompt_tokens"],
             "cached_tokens": r["cached_tokens"],
             "seconds": r["seconds"],
             "prefill_tps": round((r["prompt_tokens"] - r["cached_tokens"]) / r["seconds"], 1),
         }
-        replies.append(r["text"])
+        hashes[name] = hashlib.sha256(r["text"].encode()).hexdigest()
 
-    p = prompt(SIZES["8k"])
-    base = [{"role": "user", "content": p + "\nReply with the word: ready"}]
-    first = ask(url, model, base, 4)
+    fixed = prompt(SIZES["8k"], "resume-fixed")
+    base = [{"role": "user", "content": fixed + "\nWhat is the maintenance passphrase? Answer with the code only."}]
+    first = ask(url, model, base, 16)
     again = ask(url, model, base + [{"role": "assistant", "content": first["text"]},
-                                    {"role": "user", "content": "Say: again"}], 4)
-    replies += [first["text"], again["text"]]
+                                    {"role": "user", "content": "Same question."}], 16)
+    hashes["resume"] = hashlib.sha256(first["text"].encode()).hexdigest()
 
-    rate, text, dec = decode_rate(url, model)
-    replies.append(text)
+    rate, text = decode_rate(url, model)
+    hashes["decode"] = hashlib.sha256(text.encode()).hexdigest()
 
     out["cold"] = cold
     out["resume"] = {"first_s": first["seconds"], "again_s": again["seconds"],
                      "cached_tokens": again["cached_tokens"]}
     out["decode_tps"] = rate
-    out["decode"] = {"completion_tokens": dec["completion_tokens"], "seconds": dec["seconds"]}
     out["agents"] = agents(url, model, args.agents)
-    out["hash"] = hashlib.sha256("\x1f".join(replies).encode()).hexdigest()
+    out["hashes"] = hashes
     return out
 
 
 def gate(base, new, args):
     fails = []
-    if base["hash"] != new["hash"]:
-        fails.append("reply hash %s != baseline %s" % (new["hash"][:12], base["hash"][:12]))
+    for name, h in base["hashes"].items():
+        if name not in new["hashes"]:
+            fails.append("%s missing from this run" % name)
+        elif new["hashes"][name] != h:
+            fails.append("%s reply changed: %s != %s" % (name, new["hashes"][name][:12], h[:12]))
     if new["decode_tps"] < base["decode_tps"] * (1 - args.decode_slack):
         fails.append("decode %.1f t/s < %.1f x %.2f" %
                      (new["decode_tps"], base["decode_tps"], 1 - args.decode_slack))
     for name, b in base["cold"].items():
         n = new["cold"].get(name)
         if not n:
+            fails.append("cold %s missing" % name)
             continue
-        # a cold number is only comparable when both runs really prefilled it
-        if b.get("cached_tokens", 0) or n.get("cached_tokens", 0):
-            print("note: cold %s skipped (cache hit on one side: baseline %d, new %d)" %
-                  (name, b.get("cached_tokens", 0), n.get("cached_tokens", 0)))
+        # a couple of tokens are the model's own prefix (BOS); anything above 1% is a warm measurement
+        warm = max(b["cached_tokens"], n["cached_tokens"]) > max(16, n["prompt_tokens"] // 100)
+        if warm:
+            msg = "cold %s not measurable (cached %d vs %d)" % (name, b["cached_tokens"], n["cached_tokens"])
+            if args.allow_warm:
+                print("note: " + msg, file=sys.stderr)
+            else:
+                fails.append(msg)
             continue
-        if n["seconds"] > b["seconds"] * (1 + args.ttft_slack):
-            fails.append("cold %s %.1fs > %.1fs x %.2f" % (name, n["seconds"], b["seconds"], 1 + args.ttft_slack))
-    if new["resume"]["again_s"] > base["resume"]["again_s"] * (1 + args.ttft_slack):
+        if n["seconds"] > b["seconds"] * (1 + args.latency_slack):
+            fails.append("cold %s %.2fs > %.2fs x %.2f" % (name, n["seconds"], b["seconds"], 1 + args.latency_slack))
+    if new["resume"]["again_s"] > base["resume"]["again_s"] * (1 + args.latency_slack):
         fails.append("resume %.2fs > %.2fs" % (new["resume"]["again_s"], base["resume"]["again_s"]))
+    if new["agents"]["n"] != base["agents"]["n"]:
+        fails.append("agents n %d != %d" % (new["agents"]["n"], base["agents"]["n"]))
+    if new["agents"]["errors"]:
+        fails.append("agents %d/%d failed" % (new["agents"]["errors"], new["agents"]["n"]))
     bm, nm = base["agents"]["median_followup_s"], new["agents"]["median_followup_s"]
-    if bm and nm and nm > bm * (1 + args.ttft_slack):
+    if bm and nm and nm > bm * (1 + args.latency_slack):
         fails.append("agents median %.1fs > %.1fs" % (nm, bm))
     return fails
 
@@ -175,8 +210,9 @@ def main():
     ap.add_argument("--baseline")
     ap.add_argument("--agents", type=int, default=16)
     ap.add_argument("--skip-large", action="store_true")
+    ap.add_argument("--allow-warm", action="store_true", help="downgrade a cached cold entry to a note")
     ap.add_argument("--decode-slack", type=float, default=0.05)
-    ap.add_argument("--ttft-slack", type=float, default=0.15)
+    ap.add_argument("--latency-slack", type=float, default=0.15)
     args = ap.parse_args()
 
     out = run(args.url, args.model, args)
