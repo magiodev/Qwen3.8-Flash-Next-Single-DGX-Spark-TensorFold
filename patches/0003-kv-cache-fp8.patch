@@ -259,6 +259,19 @@ index bd1b87e63..ab2b4068d 100644
              }
          }
  
+diff --git a/zig/src/families/flashnext/cuda_batch_marks.zig b/zig/src/families/flashnext/cuda_batch_marks.zig
+index da5f01f2e..b71e6c670 100644
+--- a/zig/src/families/flashnext/cuda_batch_marks.zig
++++ b/zig/src/families/flashnext/cuda_batch_marks.zig
+@@ -20,7 +20,7 @@ pub fn inPass(p: anytype) bool {
+ /// Each mark's n-gram tail: the window before the pass moved on by the mark's rows.
+ pub fn tails(p: anytype) !void {
+     for (p.hooks.marks) |m| if (cutOf(p, m)) |cut| {
+-        const dst = m.base + snap_at.tail(m.at);
++        const dst = m.base + snap_at.tail(m.at, p.seq.kv);
+         try p.copy(dst, p.seq.tail.ptr, snap_at.tail_size);
+         try p.shiftWindow(dst, p.s.ple_nrow, wt.wide, cut, wt.ple_tail_n, wt.wide);
+     };
 diff --git a/zig/src/families/flashnext/cuda_batch_state.zig b/zig/src/families/flashnext/cuda_batch_state.zig
 index bf7d4848c..3c06ccc59 100644
 --- a/zig/src/families/flashnext/cuda_batch_state.zig
@@ -841,6 +854,19 @@ index 000000000..c5f6d0958
 +        try std.testing.expectEqual(@as(u8, @intCast(pair[1])), encode(@bitCast(pair[0])));
 +    }
 +}
+diff --git a/zig/src/families/flashnext/cuda_kv_lanes.zig b/zig/src/families/flashnext/cuda_kv_lanes.zig
+index e10452bd5..f23655290 100644
+--- a/zig/src/families/flashnext/cuda_kv_lanes.zig
++++ b/zig/src/families/flashnext/cuda_kv_lanes.zig
+@@ -156,7 +156,7 @@ pub const Pool = struct {
+         const none: cuda.DeviceBuffer = .{ .d = d, .ptr = 0, .len = 0, .borrowed = true };
+         @memset(conv, none);
+         @memset(state, none);
+-        return .{ .conv = conv, .state = state, .kc = kc, .vc = vc, .ikc = ikc, .pooled = pooled, .paged = paged, .tail = none, .history = .{ p.e.eos, p.e.eos }, .fed = 0, .logits = try gpa.alloc(u8, prompt.vocabulary * 2), .cap = 0 };
++        return .{ .conv = conv, .state = state, .kc = kc, .vc = vc, .ikc = ikc, .pooled = pooled, .paged = paged, .tail = none, .history = .{ p.e.eos, p.e.eos }, .fed = 0, .logits = try gpa.alloc(u8, prompt.vocabulary * 2), .cap = 0, .kv = p.e.kv };
+     }
+ 
+     pub fn deinit(p: *Pool) void {
 diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
 index ee6c4ff3d..c46321c36 100644
 --- a/zig/src/families/flashnext/cuda_lanes.zig
@@ -968,6 +994,19 @@ index d2244eb5d..d196f5844 100644
 +fn visionStreamBytes(v: anytype, context: usize) usize {
 +    return @as(usize, v.image_tokens) * @import("cuda_prompt_wt.zig").dims * 2 + 16 * context;
 +}
+diff --git a/zig/src/families/flashnext/cuda_lanes_snap.zig b/zig/src/families/flashnext/cuda_lanes_snap.zig
+index 9666c28de..12a789a2a 100644
+--- a/zig/src/families/flashnext/cuda_lanes_snap.zig
++++ b/zig/src/families/flashnext/cuda_lanes_snap.zig
+@@ -26,7 +26,7 @@ pub fn Snaps(comptime Cuda: type) type {
+             const inpass = forms.in_pass and self.ranks == null and l.seq.media == null and forms.gdn_fused;
+             for (s.reuse.marks) |m| if (m > at and m < stop0) {
+                 if (inpass and n < parts.max_marks) {
+-                    if (snap.prepare(self.gpa, self.engine.driver, m, historyAt(l.seq.history, ids, at, m), l.draft != null, l.seq.heads)) |p| {
++                    if (snap.prepare(self.gpa, self.engine.driver, m, historyAt(l.seq.history, ids, at, m), l.draft != null, l.seq.heads, l.seq.kv)) |p| {
+                         l.prepared[n] = p;
+                         marks[n] = .{ .at = m, .base = p.buf.ptr };
+                         n += 1;
 diff --git a/zig/src/families/flashnext/cuda_launch.zig b/zig/src/families/flashnext/cuda_launch.zig
 index 8fb1e343d..416fa6f0e 100644
 --- a/zig/src/families/flashnext/cuda_launch.zig
@@ -1300,8 +1339,20 @@ index 323cb3bed..d8a2a876c 100644
  }
  
  /// Contiguous storage or the page diagnostic's rounded arena and table, with every live allocation priced.
+diff --git a/zig/src/families/flashnext/cuda_seq_parts.zig b/zig/src/families/flashnext/cuda_seq_parts.zig
+index 4dacc9db7..3ccb132d7 100644
+--- a/zig/src/families/flashnext/cuda_seq_parts.zig
++++ b/zig/src/families/flashnext/cuda_seq_parts.zig
+@@ -53,6 +53,7 @@ pub fn newSeqIn(e: *Engine, cap: usize, block: cuda.DeviceBuffer) !Seq {
+         .fed = 0,
+         .logits = &.{},
+         .cap = cap,
++        .kv = e.kv,
+     };
+     errdefer seq.deinit(e.gpa);
+     seq.logits = try e.gpa.alloc(u8, vocab * 2);
 diff --git a/zig/src/families/flashnext/cuda_snap.zig b/zig/src/families/flashnext/cuda_snap.zig
-index 4786e59d9..644417db5 100644
+index 4786e59d9..7943cd2e3 100644
 --- a/zig/src/families/flashnext/cuda_snap.zig
 +++ b/zig/src/families/flashnext/cuda_snap.zig
 @@ -8,6 +8,7 @@ const Draft = @import("cuda_mtp_draft.zig").Draft;
@@ -1323,7 +1374,7 @@ index 4786e59d9..644417db5 100644
 +/// attnBytes with the keys and values in format `kv` (fp8 rows only exist at the whole layer's heads).
 +fn attnBytesFor(format: Kv, at: usize, h: Heads) usize {
 +    const kv_row = if (h.eql(.full)) format.keyRow() + format.valueRow() else 2 * h.kvRow();
-+    return at * kv_row + at / wt.index_ratio * index_row;
++    return at * (kv_row + index_row) + at / wt.index_ratio * index_row;
  }
  
  /// Device bytes a state at the model's heads `h` after `at` tokens takes: fixed DeltaNet pieces, attention by token.
@@ -1350,7 +1401,20 @@ index 4786e59d9..644417db5 100644
  };
  
  /// Where a kept state's pieces sit in its buffer (move's order) for a pass's marks (Hooks.marks): whole heads only.
-@@ -66,21 +81,23 @@ const Way = enum { save, restore, rows };
+@@ -54,9 +69,9 @@ pub const layout = struct {
+     pub fn state(li: usize) u64 {
+         return wt.linear_n * conv_bytes + li * state_bytes;
+     }
+-    /// The n-gram tail of a state after `n` tokens (after every attention cache's rows).
+-    pub fn tail(n: usize) u64 {
+-        return wt.linear_n * (conv_bytes + state_bytes) + wt.attn_n * attnBytes(n, .full);
++    /// The n-gram tail of a state after `n` tokens (after every attention cache's rows) in format `kv`.
++    pub fn tail(n: usize, kv: Kv) u64 {
++        return wt.linear_n * (conv_bytes + state_bytes) + wt.attn_n * attnBytesFor(kv, n, .full);
+     }
+ };
+ 
+@@ -66,35 +81,40 @@ const Way = enum { save, restore, rows };
  pub const Piece = struct { layers: usize, n: usize, row: usize = 0, per: usize = 1 };
  
  /// `move`'s pieces in order at `at` and the model's heads `h` (the disk image's at full): DeltaNet, attention, tail.
@@ -1380,16 +1444,39 @@ index 4786e59d9..644417db5 100644
          .{ .layers = layers, .n = at * index_row, .row = index_row },
          .{ .layers = layers, .n = at / wt.index_ratio * index_row, .row = index_row, .per = wt.index_ratio },
      };
-@@ -90,7 +107,7 @@ fn attnOrder(layers: usize, at: usize, h: Heads) [4]Piece {
- fn move(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: usize, way: Way) !void {
+ }
+ 
+ /// Each piece of the sequence (and the head's cache) to or from the buffer at `base`; .rows: the attention rows only.
+-fn move(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: usize, way: Way) !void {
++fn move(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, base_len: usize, at: usize, way: Way) !void {
      const dr = stream.d;
      var off: u64 = 0;
 -    const o = order(at, d != null, seq.heads);
++    const trace = std.c.getenv("TF_SNAP_TRACE") != null;
++    if (trace) std.log.info("move: at={d} way={s} kv={s} paged={any} base={x} len={d} head={any} cap={d}", .{ at, @tagName(way), @tagName(seq.kv), seq.paged != null, base, base_len, d != null, seq.cap });
 +    const o = order(at, d != null, seq.heads, seq.kv);
      var bufs: [11][]cuda.DeviceBuffer = undefined;
      bufs[0..7].* = .{ seq.conv, seq.state, seq.kc, seq.vc, seq.ikc, seq.pooled, (&seq.tail)[0..1] };
      if (d) |h| bufs[7..11].* = .{ (&h.kc)[0..1], (&h.vc)[0..1], (&h.ikc)[0..1], (&h.pooled)[0..1] };
-@@ -128,16 +145,17 @@ fn move(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: usize,
+     for (o.p[0..o.len], bufs[0..o.len], 0..) |p, layers, pi| {
++        if (trace) std.log.info(" piece {d}: n={d} row={d} layers={d} src={x}", .{ pi, p.n, p.row, p.layers, layers[0].ptr });
+         if (layers.len != p.layers) return error.SnapShape;
+         for (layers, 0..) |b, layer| {
+             if (p.n == 0) continue;
+@@ -123,33 +143,42 @@ fn move(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: usize,
+                 }
+                 continue;
+             };
++            if (off + p.n > base_len) {
++                std.log.err("snap move: piece {d} would end at {d} of a {d}-byte state (at {d}, cap {d}, {s}, head {any}, len {d})", .{ pi, off + p.n, base_len, at, seq.cap, @tagName(seq.kv), d != null, p.n });
++                return error.SnapShape;
++            }
++            if (p.n > b.len) {
++                std.log.err("snap move: piece {d} copies {d} bytes of a {d}-byte buffer (at {d}, {s}, head {any})", .{ pi, p.n, b.len, at, @tagName(seq.kv), d != null });
++                return error.SnapShape;
++            }
+             const dst, const src = if (way != .restore) .{ base + off, b.ptr } else .{ b.ptr, base + off };
+             try dr.check(dr.api.cuMemcpyDtoDAsync_v2(dst, src, p.n, stream.handle), "cuMemcpyDtoDAsync");
              off += p.n;
          }
      }
@@ -1408,16 +1495,43 @@ index 4786e59d9..644417db5 100644
 +    snap.* = .{ .buf = try cuda.DeviceBuffer.alloc(driver, bytesFor(seq.kv, at, d != null, seq.heads)), .at = at, .history = seq.history, .head = d != null, .heads = seq.heads, .kv = seq.kv };
      errdefer snap.buf.free();
      errdefer cuda.completion.drain(driver, stream, "a failed snapshot save did not drain");
-     try move(stream, seq, d, snap.buf.ptr, at, .save);
-@@ -164,6 +182,7 @@ pub fn finish(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *Snap) !v
+-    try move(stream, seq, d, snap.buf.ptr, at, .save);
++    try move(stream, seq, d, snap.buf.ptr, snap.buf.len, at, .save);
+     try stream.synchronize();
+     return snap;
+ }
+ 
+ /// A kept state for position `at` that a pass running past it fills (Hooks.marks); `finish` adds the attention rows.
+-pub fn prepare(gpa: std.mem.Allocator, driver: *const cuda.Driver, at: usize, history: [2]i64, head: bool, heads: Heads) !*Snap {
++pub fn prepare(gpa: std.mem.Allocator, driver: *const cuda.Driver, at: usize, history: [2]i64, head: bool, heads: Heads, kv: Kv) !*Snap {
+     const snap = try gpa.create(Snap);
+     errdefer gpa.destroy(snap);
+-    snap.* = .{ .buf = try cuda.DeviceBuffer.alloc(driver, bytes(at, head, heads)), .at = at, .history = history, .head = head, .heads = heads };
++    snap.* = .{ .buf = try cuda.DeviceBuffer.alloc(driver, bytesFor(kv, at, head, heads)), .at = at, .history = history, .head = head, .heads = heads, .kv = kv };
+     return snap;
+ }
+ 
+@@ -157,16 +186,17 @@ pub fn prepare(gpa: std.mem.Allocator, driver: *const cuda.Driver, at: usize, hi
+ pub fn finish(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *Snap) !void {
+     if (seq.fed < snap.at) return error.NotAtMark;
+     if (d) |h| if (!snap.head or h.len < snap.at) return error.NotAtMark;
+-    try move(stream, seq, d, snap.buf.ptr, snap.at, .rows);
++    try move(stream, seq, d, snap.buf.ptr, snap.buf.len, snap.at, .rows);
+ }
+ 
+ /// `seq` (and the head's cache, with `d`) becomes `snap`'s state; refused before any copy when it cannot hold it.
  pub fn restore(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *const Snap) !void {
      if (snap.at > seq.cap) return error.SequenceTooShort;
      if (!snap.heads.eql(seq.heads)) return error.SnapShape;
 +    if (snap.kv != seq.kv) return error.KvFormat;
      if (d) |h| if (!snap.head or snap.at > h.cap) return error.NoHeadState;
      // a state with the head's rows serves a stream without drafts too: those rows stay in the buffer
-     try move(stream, seq, d, snap.buf.ptr, snap.at, .restore);
-@@ -222,3 +241,27 @@ test "a state of the whole layer restores into no sequence of half the heads, an
+-    try move(stream, seq, d, snap.buf.ptr, snap.at, .restore);
++    try move(stream, seq, d, snap.buf.ptr, snap.buf.len, snap.at, .restore);
+     try stream.synchronize();
+     seq.history = snap.history;
+     seq.fed = snap.at;
+@@ -222,3 +252,27 @@ test "a state of the whole layer restores into no sequence of half the heads, an
  test {
      _ = @import("cuda_paging_snap_test.zig");
  }
