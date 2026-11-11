@@ -13,18 +13,20 @@ every reply.
 
 | metric | 1.1.4 + 17 patches | 1.2.6 + 3 patches | |
 |---|---|---|---|
-| reply hash (whole suite) | `ac7aedb8…` | `ac7aedb8…` | identical |
-| 2K cold prefill | 1,904 t/s | 1,907 t/s | level |
-| 8K cold prefill | 2,320 t/s | 2,237 t/s | −4% |
-| 105K cold prefill | 44.1 s | 48.4 s | −9% |
-| 105K follow-up turn | 0.45 s | 0.45 s | level |
-| decode | 99.6 t/s | 102.4 t/s | +3% |
-| 16 concurrent follow-ups, median | 2.18 s | 1.65 s | **−24%** |
+| reply hash, every measurement | identical | identical | |
+| 2K cold prefill | 1,716 t/s | 1,732 t/s | level |
+| 8K cold prefill | 2,255 t/s | 2,164 t/s | −4% |
+| 105K cold prefill | 44.1 s | 48.5 s | −9% |
+| 105K follow-up turn | 0.31 s | 0.20 s | +35% |
+| decode | 99.6 t/s | 101.2 t/s | +2% |
+| 16 concurrent follow-ups, median | 2.17 s | 1.62 s | **−25%** |
 | engine load | 176 s | 57 s | **−68%** |
-| prompt cache at 4 × 262K | 12.0 GiB | 12.0 GiB | level |
+| prompt cache at 4 × 262K | 12.0 GiB | 11.3 GiB | −6% |
 
-The reply hash matching across the whole suite matters more than any timing: the
-engine changed, the model's answers to the same prompts did not.
+The reply hashes matching across the whole suite matters more than any timing: the
+engine changed, the model's answers to the same prompts did not. `tools/ab.py`
+puts a fixed needle at 80% depth in each prompt and asks for it, so the hash
+depends on the context actually being read, not on a one-word constant.
 
 The prefill gap is not a missing patch. 1.2.6 already contains upstream's own
 MXFP8 prompt tile and its own 256-column hyper-connection kernels, so the 1.1.4
@@ -52,6 +54,10 @@ allocation. One missing template argument, both entry points.
   8,192 is another 2% of prefill but loses 3 GiB of cache.
 - `--vision-image-tokens 16384` still needs patch `0002`: the stock check refuses
   anything above 4,096.
+- The MTP head's cache stays bf16 while the model's rows are fp8. That is the
+  1.1.4 design and it is measurably faster: fp8 head rows decode at 96 t/s,
+  bf16 head rows at 100. Snapshots therefore store mixed formats, which
+  `bytesFor`/`order` state explicitly.
 
 ## What is not here
 
