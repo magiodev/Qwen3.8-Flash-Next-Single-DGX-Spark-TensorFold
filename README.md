@@ -15,7 +15,7 @@
 
 Serve **Qwen3.8 Flash Next** from a single NVIDIA DGX Spark (GB10, 128 GB) through an OpenAI-compatible API. It runs
 [TensorFold](https://github.com/ashhart/TensorFold)'s Zig engine, `tensorfold-native` (release
-[v1.1.4](https://github.com/ashhart/TensorFold/releases/tag/v1.1.4), commit `eab85828`, with this recipe's patches on top), in NVIDIA's PyTorch container. One GPU,
+[v1.2.6](https://github.com/ashhart/TensorFold/releases/tag/v1.2.6), commit `6e9af93`, with this recipe's patches on top), in NVIDIA's PyTorch container. One GPU,
 with image and video input (`VISION=1`). `VISION=0` serves text only.
 
 The default checkpoint is NVIDIA's FP4 QAD export: routed experts in NVFP4 (group size 16, CSF-compressed scale factors),
@@ -39,8 +39,11 @@ is unchanged.
 ## Performance
 
 Numbers for the default checkpoint, **`nvidia/Qwen3.8-Flash-Next-FP4-Local`** (NVIDIA's QAD FP4 export), as `./start.sh` serves it: 262,144-token
-window, 5 requests at once, fp8 KV, vision on, MTP drafts, TensorFold v1.1.4 with patches `0001` to `0017`. One DGX Spark (GB10), measured with
+window, 5 requests at once, fp8 KV, vision on, MTP drafts, the previous release with its seventeen patches. One DGX Spark (GB10), measured with
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash)'s Decode and Prefill benchmarks, running on the same Spark as the server (no network between
+**The table below was measured before this upgrade.** The recipe on this branch is TensorFold 1.2.6 with patches `0001` to `0003`; its numbers were
+taken with `tools/bench_streams.py` rather than sparkDash and are reported with the change, not reproduced here, because the two harnesses are not
+comparable (see the note after the table).
 them). Prose: temperature 0.7, thinking on. Code: temperature 0, thinking off. Aggregate is the sum of the per-request decode speeds; TTFT is the
 time to the first token.
 
@@ -130,7 +133,7 @@ cd Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold
 ./start.sh
 ```
 
-The first run builds the engine (TensorFold v1.1.4 plus `patches/`; the kernels are embedded in the binary) and
+The first run builds the engine (TensorFold 1.2.6 plus `patches/`; the kernels are embedded in the binary) and
 downloads the checkpoint if it is not already in the cache. Later starts load the weights. `start.sh` shows each
 step, runs a smoke test, prints `Qwen3.8-Flash-Next is now LIVE! on port 8888`, and returns you to the shell.
 
@@ -247,7 +250,7 @@ the docker command and changes nothing.
 **`scripts/prepare.sh`:**
 
 1. Preflight: Docker, disk.
-2. The image `tensorfold-qwen38:v1.1.4-eab8582`: TensorFold v1.1.4 (`TF_REF`) with every `patches/*.patch` applied, Zig 0.17.0, libjpeg-turbo and libwebp's decoder
+2. The image `tensorfold-qwen38:v1.2.6-6e9af93`: TensorFold 1.2.6 (`TF_REF`) with every `patches/*.patch` applied, Zig 0.17.0, libjpeg-turbo and libwebp's decoder
    (built from checksummed sources), on `nvcr.io/nvidia/pytorch:26.07-py3`; the build runs `fatbins native` only. `libtfgrammar.so` is copied out of TensorFold's v1.1.4 release archive
    (SHA-256 pinned in `config.sh`). It tries a matching prebuilt image from GitHub
    Container Registry first, by digest (`PULL=0` builds locally; the published image of the current patch set is `v1.1.4-eab8582-4baf16137ecd`, also `:latest`).
@@ -407,21 +410,15 @@ the model was still thinking.
 
 ## What the patches are
 
-`patches/*.patch` are this recipe's changes to TensorFold v1.1.4 (commit `eab85828`, which brought its own Flash Next CUDA engine), applied with `git apply`
-in the checkout root by `scripts/prepare.sh`. The earlier series for TensorFold `db281878` (patches `0001` to `0031`) is retired, since v1.1.4 replaced the engine it
-targeted. Drafted replies are still checked: a drafted reply matches `"draft": false`.
+`patches/*.patch` are this recipe's changes to TensorFold v1.2.6 (commit `6e9af93`, which brought its own Flash Next CUDA engine), applied with `git apply`
+in the checkout root by `scripts/prepare.sh`. The series is three patches: 1.2.6 ships its own versions of the sampled draft heads, the keep-late rollback,
+the shared expert's side stream, the GDN lanes, the draft confidence rule and a BF16 prompt tile, so the earlier series that carried those is not repeated here.
+Drafted replies are still checked: a drafted reply matches `"draft": false`.
 
 | Patch | What it does |
 | --- | --- |
 | `0001`, `0002` | the vision helper loads NVIDIA's quantized vision tower (MXFP8 attention, NVFP4 MLP and merger decoded to bf16 at load); image budget 16,384 tokens |
-| `0003` | `--kv-cache fp8` for Flash Next: five full 262,144-token windows fit (stock v1.1.4 fits three) |
-| `0004`, `0006` | prompt expert tile and prefill work: no drain between prompt chunks, vectorised hyper-connection kernels, a 128x128 MXFP8 prompt tile, 3,072-row chunks |
-| `0005` | the fp8 attention reader keeps the next tile in registers; the MTP head's cache stays bf16 |
-| `0007` to `0011` | sampled requests join the batched draft pass, GPU top-k candidates, a round-cost model (off), n-gram rows of all lanes gathered at once, host draws on worker threads |
-| `0012`, `0013` | a partly rejected draft window no longer replays the DeltaNet state; the n-gram table is read with `pread` and read ahead instead of through an `mmap` |
-| `0014`, `0015` | fused hyper-connection kernels, expert row tiles and MTP head pieces for prompt passes; a two-stage MX128 prompt tile |
-| `0016` | the shared expert runs on a second stream in decode rounds; a shared round takes every lane's DeltaNet rows in three launches a layer |
-| `0017` | the draft chain stops on the running product of its draft probabilities (the rule of the earlier build) |
+| `0003` | `--kv-cache fp8` for Flash Next on 1.2.6: 1,056 bytes a position a model layer instead of 2,048, so four full 262,144-token windows fit where bf16 fits three. The MTP head's cache stays bf16, and fp8 is refused with paged caches, tensor parallel, the learner or the segments path |
 
 Every knob is an environment variable with its default in `scripts/config.sh`; the CHANGELOG lists them with the measured effect of each round.
 
