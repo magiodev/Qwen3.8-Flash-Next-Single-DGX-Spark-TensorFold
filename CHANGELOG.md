@@ -5,6 +5,15 @@ Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:
 
 ## Unreleased
 
+**2026-11-12: TensorFold 1.2.6.** Carries three patches instead of seventeen: the FP4 vision tower (`0001`),
+the 16,384-token image budget (`0002`) and the fp8 KV cache (`0003`, re-derived against 1.2.6). `0004` to `0017` are dropped; five of them exist upstream
+under the same environment variables, the rest need re-measuring against 1.2.6's own prompt tile. The MTP head's cache stays bf16 and snapshots hold mixed
+formats. `TF_FLASHNEXT_CHUNK=4096` recovers the prefill the 1,536-row default costs.
+Measured on the same Spark, four streams, fp8 KV, vision on: sixteen concurrent follow-ups 2.17 s -> 1.62 s, a resumed turn 0.31 s -> 0.20 s, engine load
+176 s -> 57 s, decode at four streams 146.8 -> 171.6 tok/s aggregate prose and 119.0 -> 157.1 code, single-stream decode 55.4 -> 49.5 prose and 47.0 -> 46.0
+code, prefill 4k-63k 2,327-2,564 -> 2,137-2,211 tok/s. Every reply in the A/B suite hashes identically and a 105K prompt resumes at 105,224 cached tokens
+in 0.38 s. `zig build test` fails only the five tests the unpatched 1.2.6 tree also fails in this container.
+
 **2026-10-30: `ABLIT` (new, off by default).** `ABLIT=1` serves NVIDIA's FP4 checkpoint with drowzeys's Keys house-qsa abliteration overlay
 (`drowzeys/keys-Qwen3.8-Flash-Next-NVFP4-FP4-QAD-house-qsa-L3-47` @ `c44f5b92`): `self_attn.o_proj` of the 12 attention (QSA) layers (L3 to L47), from a
 ~190 MB sidecar. `scripts/prepare.sh` downloads the sidecar (the overlay is gated: `HF_TOKEN`) and `scripts/ablit_view.py` builds a folder of symlinks to the stock snapshot plus the
