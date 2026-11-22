@@ -1,9 +1,64 @@
 # Changelog
 
-Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:v1.2.7-93a2e93`, built by
-`scripts/prepare.sh` from TensorFold v1.2.7 (`93a2e93e`) plus `patches/` (0001 to 0004).
+Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:v1.3.3-1e4a32c`, built by
+`scripts/prepare.sh` from TensorFold v1.3.3 (`1e4a32cb`) plus `patches/` (0001 to 0003).
 
 ## Unreleased
+
+**2026-11-22: TensorFold v1.3.3, and three patches instead of five.** The engine moves from v1.2.7 (`93a2e93e`) to v1.3.3
+(`1e4a32cb`), which absorbed two of the five patches. The vision tower no longer needs one: 1.3.3 decodes ModelOpt's MXFP8/NVFP4
+vision linears to bf16 itself (`zig/src/vision/qwen_cuda_dequant.zig`), so `0001-vision-nvidia-fp4-tower` retires. Video no longer
+needs one either: the engine ships the CUDA video path (`zig/src/video/tf_video.c`, `core/qwen_vl/video.zig`,
+`--vision-video-tokens`), so `0005-flashnext-cuda-video` retires and the recipe keeps only `VIDEO=1`, the pinned FFmpeg build and
+its tests. `patches/` is now `0001-vision-image-tokens-16384`, `0002-kv-cache-fp8`, `0003-prompt-mxfp8-tile`, still one unbroken
+series.
+
+- Both remaining engine changes are still absent upstream. `zig/src/native/cuda_refusal.zig` refuses `--kv-cache fp8` for any
+  family whose `Options` has no `kv8` field, and Flash Next's has none (`Options` in `cuda_lanes.zig`), so `0002` stays.
+  `qmmf`'s prompt path still requires `w.mode == .bf16`, so `0003` stays. `0001` stays because upstream still caps `image_tokens`
+  at 4,096.
+- The three are rebased by hand: 18 rejected hunks across 9 files, all context drift from 1.3.3's paged KV, lane-batched
+  attention and prompt-row refactors, no semantic rewrite. `0002` needed six call-site fixes (`initKv`/`initPartsKv` with
+  `headKv`, the engine's `kv` field, the disk tier's bf16-only guards, the image `prep8` plumbing, the device-test hook);
+  `0003` needed `Lane.prompt_mx`, its `mx_min_n` form, `nativeMatmulFor` and the test wiring. The two patches change 16 of the
+  files `zig/tests/fixtures/gradient-serving.tsv` pins (served kernels, the family's batch and prompt code), so their rows in
+  `zig/tests/fixtures/pocket-serving-approved.tsv` carry the patched digests: the approval list stops at the first row for a path,
+  so a row is replaced, not appended.
+- `scripts/config.sh` takes `TF_REF=1e4a32cb`, `TF_RELEASE_VERSION=1.3.3` and the v1.3.3 archive's `libtfgrammar.so` SHA-256
+  (`95e4388a…`), and the image tag is now derived (`v${TF_RELEASE_VERSION}-${TF_REF:0:7}`), not hardcoded: the image is
+  `tensorfold-qwen38:v1.3.3-1e4a32c`. FFmpeg stays 9.0.2, which 1.3.3 still pins in `tools/zig/build_ffmpeg.sh` and
+  `zig/build/video.zig`, and `prepare.sh`'s `video` step still exists.
+- Measured on one Spark, the defaults (four streams, fp8 KV, vision on), idle lane, `tools/bench_streams.py`, median of 3:
+
+  | | v1.2.7 build | v1.3.3 build |
+  | --- | ---: | ---: |
+  | Decode prose, 1 / 4 streams (total tok/s) | 49.5 / 171.6 | 57.5 / 191.4 |
+  | Decode code, 1 / 4 streams | 46.0 / 157.1 | 49.8 / 168.0 |
+  | TTFT at 4 streams, prose | 162 ms | 155 ms |
+  | Prefill 8k / 16k / 63k | 2,158 / 2,211 / 2,172 | 2,343 / 2,387 / 2,376 |
+  | 105k-token prompt, cold | 48.5 s | 45.9 s |
+
+  Reply hashes at 2k, 8k and a resumed turn are identical to the v1.2.7 and v1.1.4 builds; vision answers "Red"; a resumed
+  6.9k-token prefix reuses 6,886 cached tokens.
+- The first long prompt after a restart is slow on this engine: 105k tokens in 90.9 s on the first attempt after the cutover, 45.9 s
+  on the next (`queued=0` both times). Warm the lane before timing one.
+- Checked: the three patches apply to a pristine `1e4a32c` with `git apply --check` and `git apply` (what `prepare.sh` runs) and
+  reproduce, byte for byte, the tree that builds `tensorfold-native`; `zig build -Dnvcc=… -Doptimize=fast fatbins native` makes the
+  engine on `nvcr.io/nvidia/pytorch:26.07-py3`; `bash -n start.sh stop.sh scripts/*.sh` and `python3 -m py_compile tools/*.py`
+  pass, and so does every offline `tools/test_*.py` except `test_astra_patches.py`, `test_copy_draft_rows.py` (both want a
+  local `tensorfold/` package) and `test_start_meminfo.py` (reads `/proc/meminfo`), which fail the same way on the base commit.
+  On the served build, `exact.py --pad 3000` (551 drafts accepted) and `exact.py` (557) match their `"draft": false` and
+  concurrent replies, `toolcheck.py` is 3/3, `visioncheck.py` sees the red circle and the blue square, `prompt_reuse.py 30000`
+  resumes 99.3% of every follow-up, a 199,730-token needle is found (prefill 94.2 s), `bench.py` prefills 2,406 / 2,465 / 2,464
+  / 2,430 / 2,345 tok/s at 6k / 13k / 25k / 50k / 101k with decode 49.6 (code, greedy) and 50.7 (chat, sampled) tok/s, and
+  `context_boundary.py --context 262144` passes 16 checks.
+- `zig build -Dfixed-cpu test-host` (the Linux no-GPU gate) does not finish clean on the build box: it has no device and no
+  `libtfgrammar.so`, and its overlayfs keeps file mtimes to the microsecond. `digest_cache_test`, `prepared`'s cache-identity test
+  and `qwen35_cost_cache_host`'s three concurrent-publication tests fail on exactly that (`1795383551431103255` against
+  `1795383551000000000`); `tools/release/check_package.py` refuses the `/src` build path (`PrivateBuildPath`). None of those
+  touch code the patches change; `test-gradient-serving`, the one that did, passes with the approvals above.
+- Not run here: `prepare.sh`'s full image build (the box cannot hold it), a live video request, and `tf-cuda-test
+  qmmf-prompt-mx` on a GPU for 1.3.3.
 
 **2026-11-18: `scripts/harden.sh` (new) cuts the NGC base's unused ballast into its own image tag, opt-in.**
 [issue #77](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold/issues/77) by

@@ -1,8 +1,8 @@
 diff --git a/zig/kernels/cuda/qmmf.cu b/zig/kernels/cuda/qmmf.cu
-index 25c091c1..2e70e8db 100644
+index c08ad62..e388731 100644
 --- a/zig/kernels/cuda/qmmf.cu
 +++ b/zig/kernels/cuda/qmmf.cu
-@@ -243,8 +243,148 @@ BF16_K32(true)
+@@ -248,8 +248,148 @@ BF16_K32(true)
  template __global__ void reduce_kernel<true>(const float* __restrict__, void* __restrict__, long long, int, float);
  template __global__ void reduce_kernel<false>(const float* __restrict__, void* __restrict__, long long, int, float);
  
@@ -152,7 +152,7 @@ index 25c091c1..2e70e8db 100644
  // tf-cuda-test native-fp: e2m1_pairs == fp4pair on all words, codes x e4m3 scales; out: misses, first, checks
  extern "C" __global__ void tf_qmmf_native_fp4_check(unsigned long long* __restrict__ out) {
 diff --git a/zig/src/cuda/qmmf.zig b/zig/src/cuda/qmmf.zig
-index 559f8db0..ed4702d2 100644
+index 5a5269f..cfafe9b 100644
 --- a/zig/src/cuda/qmmf.zig
 +++ b/zig/src/cuda/qmmf.zig
 @@ -157,6 +157,12 @@ fn loadTiles(mod: Module, comptime mode: Mode, comptime wide: bool) ![7]Function
@@ -176,9 +176,9 @@ index 559f8db0..ed4702d2 100644
 +    // the narrowest MXFP8 projection that tile takes: by the weight's width alone, so a row's bits never depend on its chunk
 +    prompt_mx_min: usize = 0,
      clusters: bool, // sm_90 on: slices meet in a cluster's shared memory
+     pdl: bool = false, // decode launches dependent (qmmf_kernel waits after its weight loads); weights fixed after load
  
-     pub fn load(d: *const Driver, capability_major: u32) !Lane {
-@@ -244,6 +253,20 @@ pub const Lane = struct {
+@@ -245,6 +254,20 @@ pub const Lane = struct {
          l.prompt_sms = @intCast(@max(sms, 1));
      }
  
@@ -199,7 +199,7 @@ index 559f8db0..ed4702d2 100644
      pub fn unload(l: *Lane) void {
          l.mod.unload();
      }
-@@ -273,6 +296,43 @@ pub const Lane = struct {
+@@ -274,6 +297,43 @@ pub const Lane = struct {
              2 * promptBlocks(m, w.n) > l.prompt_sms;
      }
  
@@ -243,7 +243,7 @@ index 559f8db0..ed4702d2 100644
      /// matmul() writing y as `out` says: bf16, or fp32.
      pub fn matmulOut(l: Lane, s: Stream, x: u64, ldx: usize, m: usize, w: Weight, y: u64, out: Out, part: u64) !void {
          const p = planFor(m, w, l.clusters);
-@@ -386,6 +446,12 @@ test "tile shared bytes, slices and row tiles as the Python host picks them" {
+@@ -389,6 +449,12 @@ test "tile shared bytes, slices and row tiles as the Python host picks them" {
      try std.testing.expect(r.reduce and !r.cluster);
  }
  
@@ -257,7 +257,7 @@ index 559f8db0..ed4702d2 100644
      try std.testing.expectEqualStrings("_ZN7tf_qmmf11qmmf_kernelILi4ELi64ELi64ELi1ELi4ELi4ELb1ELb0ELb1EEEvPK13__nv_bfloat16PKhS5_fPvPfiiiiiii", symbol(.bf16, 64, false, true, true));
      try std.testing.expectEqualStrings("_ZN7tf_qmmf11qmmf_kernelILi2ELi16ELi64ELi1ELi4ELi4ELb0ELb1ELb0EEEvPK13__nv_bfloat16PKhS5_fPvPfiiiiiii", symbol(.mxfp8, 16, true, false, false));
 diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
-index 73ed0426..9a53515d 100644
+index bb818b9..cc64e7e 100644
 --- a/zig/src/families/flashnext/cuda_batch.zig
 +++ b/zig/src/families/flashnext/cuda_batch.zig
 @@ -129,8 +129,8 @@ pub fn Pass(comptime Tri: type) type {
@@ -272,7 +272,7 @@ index 73ed0426..9a53515d 100644
          pub fn sumSlices(self: *Self, part: u64, out: u64, bf16: bool, n: usize, sk: usize) !void {
              return ops.sumSlices(self.k, self.stream, part, out, bf16, n, sk);
 diff --git a/zig/src/families/flashnext/cuda_batch_kernels.zig b/zig/src/families/flashnext/cuda_batch_kernels.zig
-index 548a10b6..67832844 100644
+index 65945d0..4977ec0 100644
 --- a/zig/src/families/flashnext/cuda_batch_kernels.zig
 +++ b/zig/src/families/flashnext/cuda_batch_kernels.zig
 @@ -41,6 +41,7 @@ pub const Forms = struct {
@@ -280,26 +280,26 @@ index 548a10b6..67832844 100644
      readout_rows: usize = 64, // TF_FLASHNEXT_READOUT_ROWS (maxInt: never)
      fact_rows: usize = 64, // TF_FLASHNEXT_FACT_ROWS (maxInt: never)
 +    mx_min_n: usize = 1024, // TF_FLASHNEXT_PROMPT_MX128 (0: the exact kernels in prompt passes too)
+     readout_fused: bool = false, // TF_FLASHNEXT_READOUT_FUSED
  
      pub fn resolve() Forms {
-         return .{
-@@ -49,6 +50,7 @@ pub const Forms = struct {
+@@ -50,6 +51,7 @@ pub const Forms = struct {
              .in_pass = @import("cuda_lanes_snap.zig").keepInPass(),
              .readout_rows = @import("cuda_chunk.zig").readoutTileRows(),
              .fact_rows = @import("cuda_nvfp4_tile.zig").factRows(),
 +            .mx_min_n = @import("cuda_prompt_knobs.zig").mx128MinN(),
+             .readout_fused = @import("readout_fused.zig").on(),
          };
      }
- };
-@@ -116,6 +118,7 @@ pub const Kernels = struct {
-         k.native_lane = try cuda.qmmf.Lane.load(d, (try d.currentCapability()) / 10); // the current device: its tiles
+@@ -119,6 +121,7 @@ pub const Kernels = struct {
          errdefer k.native_lane.unload();
-         if (envOn("TF_FLASHNEXT_PROMPT_BF16")) try k.native_lane.loadPrompt(d); // the shapes qmmf-prompt-bench times
+         const bf16 = try @import("sys").environment.read(bool, "TF_FLASHNEXT_PROMPT_BF16", true);
+         if (bf16) try k.native_lane.loadPrompt(d); // the shapes qmmf-prompt-bench times
 +        try k.native_lane.loadPromptMx(k.forms.mx_min_n); // prompt passes only (nativeMatmulFor)
          var device: c_int = 0;
          var sms: c_int = 0;
          try d.check(d.api.cuDeviceGet(&device, 0), "cuDeviceGet");
-@@ -150,6 +153,13 @@ pub const Kernels = struct {
+@@ -153,6 +156,13 @@ pub const Kernels = struct {
          return k.native_lane.matmulOut(s, x, ldx, m, w, y, out, part);
      }
  
@@ -312,12 +312,12 @@ index 548a10b6..67832844 100644
 +
      /// TF_FLASHNEXT_PROFILE=1: each chunk's wall time (synchronized) and its host n-gram gather on stderr.
      pub fn profile() bool {
-         const v = std.c.getenv("TF_FLASHNEXT_PROFILE") orelse return false;
+         // the startup check refused every malformed value already, so a plain default stands here
 diff --git a/zig/src/families/flashnext/cuda_disk.zig b/zig/src/families/flashnext/cuda_disk.zig
-index 697bd7ba..9f3c66da 100644
+index 01f1fce..44d662e 100644
 --- a/zig/src/families/flashnext/cuda_disk.zig
 +++ b/zig/src/families/flashnext/cuda_disk.zig
-@@ -167,6 +167,7 @@ pub fn policyOf(c: anytype) [13]u64 {
+@@ -123,6 +123,7 @@ pub fn policyOf(c: anytype) [13]u64 {
      grids.update(std.mem.asBytes(&k.fp8.resident));
      if (k.expert_tile) |x| grids.update(std.mem.asBytes(&x.resident));
      grids.update(std.mem.asBytes(&k.native_lane.prompt_sms)); // a BF16 prompt tile runs over half these SMs' worth
@@ -327,7 +327,7 @@ index 697bd7ba..9f3c66da 100644
          e.chunk,
 diff --git a/zig/src/families/flashnext/cuda_prompt_knobs.zig b/zig/src/families/flashnext/cuda_prompt_knobs.zig
 new file mode 100644
-index 00000000..672d80bf
+index 0000000..672d80b
 --- /dev/null
 +++ b/zig/src/families/flashnext/cuda_prompt_knobs.zig
 @@ -0,0 +1,13 @@
@@ -345,10 +345,10 @@ index 00000000..672d80bf
 +    if (std.c.getenv("TF_FLASHNEXT_PROMPT_MX128") == null) try std.testing.expectEqual(@as(usize, 1024), mx128MinN());
 +}
 diff --git a/zig/src/families/flashnext/cuda_tiles.zig b/zig/src/families/flashnext/cuda_tiles.zig
-index b62e0e79..a003ec3d 100644
+index bd51719..3cd1999 100644
 --- a/zig/src/families/flashnext/cuda_tiles.zig
 +++ b/zig/src/families/flashnext/cuda_tiles.zig
-@@ -32,14 +32,15 @@ fn sweepOf(m: usize, bm: usize, k: usize) usize {
+@@ -33,14 +33,15 @@ fn sweepOf(m: usize, bm: usize, k: usize) usize {
  }
  
  /// x [m, k] times w: the native lane, the 16-row lane tile, or from 64 rows the prompt tile (folded with K slices).
@@ -368,7 +368,7 @@ index b62e0e79..a003ec3d 100644
          try stream.d.check(stream.d.api.cuMemsetD8Async(part + bytes, 0, bytes, stream.handle), "cuMemsetD8Async");
          return 2;
 diff --git a/zig/src/families/flashnext/cuda_zero_slice.zig b/zig/src/families/flashnext/cuda_zero_slice.zig
-index 17e91dc6..f19841cb 100644
+index 17e91dc..f19841c 100644
 --- a/zig/src/families/flashnext/cuda_zero_slice.zig
 +++ b/zig/src/families/flashnext/cuda_zero_slice.zig
 @@ -11,12 +11,12 @@ pub fn spends(native: bool, sk: usize, m: usize, n: usize, cap: usize) bool {
@@ -387,29 +387,29 @@ index 17e91dc6..f19841cb 100644
  }
  
 diff --git a/zig/src/native/cuda_disk_policy_test.zig b/zig/src/native/cuda_disk_policy_test.zig
-index bfb77eb7..3d5dcfe9 100644
+index 543c3d2..39999ac 100644
 --- a/zig/src/native/cuda_disk_policy_test.zig
 +++ b/zig/src/native/cuda_disk_policy_test.zig
-@@ -176,6 +176,9 @@ test "disk identity: Flash Next CUDA resolved prompt rows, kernel forms and expe
-         try changed.append(t.allocator, try flashKey(&x, &c));
-         @field(k.forms, field) = 64;
-     }
+@@ -179,6 +179,9 @@ test "disk identity: Flash Next CUDA resolved prompt rows, kernel forms and expe
+     k.forms.readout_fused = true; // TF_FLASHNEXT_READOUT_FUSED=1: a prompt pass's BF16 read-out on the fused tiles
+     try changed.append(t.allocator, try flashKey(&x, &c));
+     k.forms.readout_fused = false;
 +    k.forms.mx_min_n = 0; // TF_FLASHNEXT_PROMPT_MX128=0: the MXFP8 projections on the exact kernels
 +    try changed.append(t.allocator, try flashKey(&x, &c));
 +    k.forms.mx_min_n = 1024;
      k.expert_tile = .{ .mod = undefined, .fns = undefined, .resident = .{ 64, 64 }, .selection = .up };
      const up = try flashKey(&x, &c);
      k.expert_tile.?.selection = .both; // the same grids: the selection alone moves the key
-@@ -216,7 +219,7 @@ test "disk identity: Flash Next CUDA prompt forms take each setting's value at l
+@@ -219,7 +222,7 @@ test "disk identity: Flash Next CUDA prompt forms take each setting's value at l
      const env = @import("sys").env;
      const Engine = @typeInfo(@FieldType(flash.Cuda, "engine")).pointer.child;
      const Forms = @FieldType(@FieldType(Engine, "batch_k"), "forms");
--    const names = [_][:0]const u8{ "TF_FLASHNEXT_GDN_FUSED", "TF_FLASHNEXT_HC_FUSE", "TF_FLASHNEXT_KEEP_INPASS", "TF_FLASHNEXT_READOUT_ROWS", "TF_FLASHNEXT_FACT_ROWS" };
-+    const names = [_][:0]const u8{ "TF_FLASHNEXT_GDN_FUSED", "TF_FLASHNEXT_HC_FUSE", "TF_FLASHNEXT_KEEP_INPASS", "TF_FLASHNEXT_READOUT_ROWS", "TF_FLASHNEXT_FACT_ROWS", "TF_FLASHNEXT_PROMPT_MX128" };
+-    const names = [_][:0]const u8{ "TF_FLASHNEXT_GDN_FUSED", "TF_FLASHNEXT_HC_FUSE", "TF_FLASHNEXT_KEEP_INPASS", "TF_FLASHNEXT_READOUT_ROWS", "TF_FLASHNEXT_FACT_ROWS", "TF_FLASHNEXT_READOUT_FUSED" };
++    const names = [_][:0]const u8{ "TF_FLASHNEXT_GDN_FUSED", "TF_FLASHNEXT_HC_FUSE", "TF_FLASHNEXT_KEEP_INPASS", "TF_FLASHNEXT_READOUT_ROWS", "TF_FLASHNEXT_FACT_ROWS", "TF_FLASHNEXT_READOUT_FUSED", "TF_FLASHNEXT_PROMPT_MX128" };
      for (names) |n| _ = env.unsetenv(n);
      defer for (names) |n| {
          _ = env.unsetenv(n);
-@@ -224,7 +227,7 @@ test "disk identity: Flash Next CUDA prompt forms take each setting's value at l
+@@ -227,7 +230,7 @@ test "disk identity: Flash Next CUDA prompt forms take each setting's value at l
      try t.expectEqualDeep(Forms{}, Forms.resolve());
      for (names) |n| _ = env.setenv(n, "0", 1);
      const never = std.math.maxInt(usize);
@@ -419,19 +419,11 @@ index bfb77eb7..3d5dcfe9 100644
      _ = env.setenv("TF_FLASHNEXT_FACT_ROWS", "32", 1);
      try t.expectEqual(@as(usize, 128), Forms.resolve().readout_rows);
 diff --git a/zig/tests/cuda/main.zig b/zig/tests/cuda/main.zig
-index d5762d4f..bd935a5a 100644
+index bb28a8a..3e7e91c 100644
 --- a/zig/tests/cuda/main.zig
 +++ b/zig/tests/cuda/main.zig
-@@ -260,6 +260,7 @@ const usage =
-     \\  qmmf-prompt-contract     K64 and K32 replacement gates with both new output controls
-     \\  qmmf-prompt-repro        isolate M=65 N=8240 K=2560 SK=4 BF16 without clusters
-     \\  qmmf-prompt-bench        rank0 normal-main weighted A-B-A timings, plus separate MTP hidden timings
-+    \\  qmmf-prompt-mx           relaxed MXFP8 prompt tile: FP64 bound, row bytes independent of the call's rows, timed against the lane
-     \\  qmm-prefill-many-bench    same-process A-B-A screening for the GB10 launch fusion
-     \\  mtp-rows                  tf_q36m_attn_rows: gates 1-4 (byte-equal to tf_q36m_attn a segment) and float64 alone
-     \\  qwen-pages                qwen35.cu's attention cache through a page table: paged == contiguous, float64, red controls
-@@ -388,6 +389,7 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
-     if (std.mem.eql(u8, cmd, "nvfp4-b32")) return nvfp4_b32_tests.run(gpu);
+@@ -187,6 +187,7 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
+     if (std.mem.eql(u8, cmd, "nvfp4-nz5")) return @import("nvfp4_nz5_tests.zig").run(gpu);
      if (std.mem.eql(u8, cmd, "qmmf-prompt")) return @import("qmmf_prompt_tests.zig").run(gpu);
      if (std.mem.eql(u8, cmd, "qmmf-prompt-contract")) return @import("contract_qmmf_prompt.zig").run(gpu);
 +    if (std.mem.eql(u8, cmd, "qmmf-prompt-mx")) return @import("qmmf_prompt_mx_tests.zig").run(gpu);
@@ -440,7 +432,7 @@ index d5762d4f..bd935a5a 100644
      if (std.mem.eql(u8, cmd, "lane-half")) return lane_half_tests.run(gpu);
 diff --git a/zig/tests/cuda/qmmf_prompt_mx_tests.zig b/zig/tests/cuda/qmmf_prompt_mx_tests.zig
 new file mode 100644
-index 00000000..b21c3700
+index 0000000..b21c370
 --- /dev/null
 +++ b/zig/tests/cuda/qmmf_prompt_mx_tests.zig
 @@ -0,0 +1,134 @@
@@ -578,3 +570,22 @@ index 00000000..b21c3700
 +    }
 +    r.report("relaxed MXFP8 prompt tile: FP64-bounded, row bytes independent of the call's rows and tiles, bf16 the rounded fp32");
 +}
+diff --git a/zig/tests/fixtures/pocket-serving-approved.tsv b/zig/tests/fixtures/pocket-serving-approved.tsv
+index e41046d..0a503d0 100644
+--- a/zig/tests/fixtures/pocket-serving-approved.tsv
++++ b/zig/tests/fixtures/pocket-serving-approved.tsv
+@@ -2,7 +2,7 @@ zig/kernels/cuda/flashnext_batch.cu	ad38e3c8362f27675cfd4afa77f0617597fb219f883c
+ zig/kernels/cuda/flashnext_hc.cu	b1dd7dd13d8e9af75e4ca5dca14f793e860d18cb69b69a46d81b73ee7a2961f2	0	1.1.2 increments 237 (#1046); approved 20 Oct 2026
+ zig/src/cuda/kernels.zig	f36160e9b9a0d906f58e38436433a6531d02a1198bc8bc0a7967a0e636c93abe	0	commits 2561150d7, 45f3dd04e, d4f4a05de, e64f1276a, 5dcf77d7c, 7f6f940eb, 427b553e1, 5302b4de8, 758acba8a, 4cec0eba1, 1bef815d2, c360607f0, 53abe4556, f24a65145, 57f24028d, b6374bb1d, 624e15188, 4f7613ef7, 40dccba55, bbd232d11, a73be1a38, 55ddc11cb, 307d686f5, edc228527, bba8f567b, df0ef6bca, 1dd63e39a, 751e7f82a, 9c0c93aef, 58b767435, 0a2a1c681, 59be20e24, 93f5261a8, d4027abea, 6bdb12918, 9b8d4aff6, c3861d337, 3c57c1433, 4c9b53c73, 653bd37f5, 9a9cda815, 7c9d845c0, 2757724d5, 10796d46f, 71c31a974, bc76d90d6, 3915bceaf, 6bc8b2854, 99787f6e4, 4abbdff12, aefcdbb60, 3b7a5e86c, 28076cc88, 9664f9a14, 6636e6964, e8eabc82c, 241ac1bbc; series patches 25-mimo-02.patch; MiMo-only aliases omitted from this candidate; HELD: must be re-qualified by the LW device gates on the 1.1.1 candidate; 1.1.2 increments 236 (#1046), 237 (#1046), 238 (#1046); approved 20 Oct 2026; HELD: Living Weights re-qualification owed on the LW device for 1.1.2
+ zig/src/cuda/root.zig	bd1fd4b7414b0f02a6f3db17afac23d8ca2fb397c048142299b1fa8d1716fe2f	0	commits 2561150d7, e64f1276a, 5dcf77d7c, 7f6f940eb, 427b553e1, f630f1a90, e9bf05ffd, 853122583, 4cec0eba1, 1bef815d2, c360607f0, 53abe4556, ba1a9a2bb, 903f601cb, 05350da4c, 5c6ba325b, 8bb91d64e, bbd232d11, a73be1a38, 55ddc11cb, 307d686f5, df0ef6bca, 1dd63e39a, 751e7f82a, 9c0c93aef, 6bdb12918, b8d45ded3, 7c9d845c0, cb23d3d2a, d40bc9e8b, 21e8058ce, 881cccaa4, c0ff6b3f4, f1f7f9abd, 3915bceaf, 80afaf959, 99787f6e4, d06927742, a34cb6ded, 6636e6964, e8eabc82c, 241ac1bbc; series patches 01-living-weights.patch, 14-runtime-foundation.patch; HELD: must be re-qualified by the LW device gates on the 1.1.1 candidate; 1.1.2 increments 155, 161; approved 20 Oct 2026; HELD: Living Weights re-qualification owed on the LW device for 1.1.2
+-zig/src/families/flashnext/cuda_batch.zig	3a70dd745d7c3c4391c06c977af48ee86d1020eba9a773cffc600d2b2d974f67	0	1.1.2 increments 235 (#1046), 236 (#1046), 237 (#1046), 238 (#1046), 239 (#1046), 240 (#1046), 242 (#1046), 243 (#1046), 244 (#1046), 250 (#1046); approved 20 Oct 2026
++zig/src/families/flashnext/cuda_batch.zig	708d616c43fd45b54549b21fd24c364fe6db31b2107bfe1722a923627ecd62c7	0	1.1.2 increments 235 (#1046), 236 (#1046), 237 (#1046), 238 (#1046), 239 (#1046), 240 (#1046), 242 (#1046), 243 (#1046), 244 (#1046), 250 (#1046); approved 20 Oct 2026; recipe patch 0003 (MXFP8 prompt tile) changed this serving file; approved 22 Nov 2026
+ zig/src/families/flashnext/cuda_batch_state.zig	df0b9b39ce078d97f4bfc9ebec80919494b69f662eaafa5645af1b89f5248cfb	0	1.1.2 increments 235 (#1046), 236 (#1046), 237 (#1046), 238 (#1046), 239 (#1046), 240 (#1046), 242 (#1046), 244 (#1046); approved 20 Oct 2026; recipe patch 0002 (--kv-cache fp8) changed this serving file; approved 22 Nov 2026
+ zig/src/families/flashnext/cuda_config.zig	fd2b9e11dbf9265fb95abdc22f39154416b8b2f379489bb1a6df88901a3f8c41	0
+ zig/src/families/flashnext/cuda_glue.zig	f8f7cea3d9208da6256aa96b75bb9e23a84108b0e92726fef351141db6031018	0	1.1.2 increments 235 (#1046), 237 (#1046), 239 (#1046); approved 20 Oct 2026; recipe patch 0002 (--kv-cache fp8) changed this serving file; approved 22 Nov 2026
+@@ -64,3 +64,5 @@ zig/src/families/flashnext/cuda_images.zig	14e4851ab066f061f0ca581bbf2dc5d4d0cb8
+ zig/src/families/flashnext/cuda_media.zig	1175cb6956561ec2e54174ff5eddf7c31490ae4a4c54979a040b9f19738eef64	0	recipe patch 0002 (--kv-cache fp8) changed this serving file; approved 22 Nov 2026
+ zig/src/families/flashnext/cuda_mtp_draft.zig	fbf7808bc82a5db47a0d48a5f6f550637c104cc418f5c7aff13e63c4f5316007	0	recipe patch 0002 (--kv-cache fp8) changed this serving file; approved 22 Nov 2026
+ zig/src/families/flashnext/cuda_snap.zig	4d59690e8b61812c1ad53dec3013d786372aeb4610a6e1292ea17df5fe9bb9fb	0	recipe patch 0002 (--kv-cache fp8) changed this serving file; approved 22 Nov 2026
++zig/kernels/cuda/qmmf.cu	aa4de464e085ae675e6f3f36842befdb0ce14bcecab524fb7ed5e9ea26ab8b1d	0	recipe patch 0003 (MXFP8 prompt tile) changed this serving file; approved 22 Nov 2026
++zig/src/cuda/qmmf.zig	01936365c3187ce17fdb58f0581ebdd5f708dbcab1a67dedfa1e07da7e065824	0	recipe patch 0003 (MXFP8 prompt tile) changed this serving file; approved 22 Nov 2026
