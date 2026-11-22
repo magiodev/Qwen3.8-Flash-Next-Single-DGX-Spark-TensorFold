@@ -40,13 +40,12 @@ def one(text: str, pattern: str) -> str:
     return hits[0] if hits else ""
 
 
-# ---- the patches stay one numbered series, with the video one in it ---------------------------
+# ---- the patches stay one numbered series (1.3.3 carries video itself) ------------------------
 
 numbers = sorted(int(p.name[:4]) for p in (ROOT / "patches").glob("[0-9][0-9][0-9][0-9]-*.patch"))
 check(
-    "patches/ is one unbroken series that includes the video patch",
-    ([] if numbers == list(range(1, len(numbers) + 1)) else [f"patch numbers are {numbers}, expected 1..{len(numbers)}"])
-    + ([] if list((ROOT / "patches").glob("0005-*video*.patch")) else ["no 0005 video patch in patches/"]),
+    "patches/ is one unbroken series",
+    [] if numbers == list(range(1, len(numbers) + 1)) else [f"patch numbers are {numbers}, expected 1..{len(numbers)}"],
 )
 
 # ---- the pin, and the fact that the image hash covers it -------------------------------------
@@ -148,7 +147,7 @@ check(
     + ([] if "libtfvideo" in README else ["the README never names libtfvideo"])
     + ([] if "/opt/tensorfold/libexec/tfvideo" in README else ["the README does not say the library sits off the probed paths"])
     + ([] if re.search(r"^\| `VIDEO` \| `0` \|", README, re.M) else ["the Configuration table has no VIDEO row"])
-    + ([] if "compiles" in README and "Not measured on a Spark yet" in README else ["the README does not say the video path is unmeasured on a Spark"]),
+    + ([] if "Not measured on a Spark yet" in README else ["the README does not say the video path is unmeasured on a Spark"]),
 )
 
 if failures:

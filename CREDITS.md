@@ -47,19 +47,21 @@ license files from the pinned checkout.
   The Flash Next CUDA engine in this recipe is ported from TensorFold's Python Flash Next CUDA engine, written by
   Ash Hart and the TensorFold contributors ([contributors](https://github.com/ashhart/TensorFold/graphs/contributors));
   their authorship is recorded in TensorFold's history.
-- **The 4 patches in `patches/` (0001 to 0004) on TensorFold v1.2.7 are written by MiaAI-Lab** (Mia's AI Lab,
+- **The 3 patches in `patches/` (0001 to 0003) on TensorFold v1.3.3 are written by MiaAI-Lab** (Mia's AI Lab,
   [MiaAI-Lab](https://github.com/MiaAI-Lab)), under this
   repository's MIT License. They modify TensorFold's own Flash Next CUDA engine, which is by Ash Hart and the TensorFold
   contributors; that code keeps TensorFold's licenses (see `NOTICE`). Patch by patch:
-  - `0001-vision-nvidia-fp4-tower`: the CUDA vision tower loads NVIDIA's MXFP8 and NVFP4 vision linears, decoded to bf16 at load. MiaAI-Lab.
-  - `0002-vision-image-tokens-16384`: image-token budget 16,384. MiaAI-Lab.
-  - `0003-kv-cache-fp8`: `--kv-cache fp8` for Flash Next, so five full 262,144-token windows fit; the fp8 reader keeps the next tile in registers and
-    the MTP head's cache stays bf16 while it fits (the v1.1.4 series' 0003 and 0005, rebased onto v1.2.7). MiaAI-Lab; the format is adapted from
+  - `0001-vision-image-tokens-16384`: image-token budget 16,384. MiaAI-Lab.
+  - `0002-kv-cache-fp8`: `--kv-cache fp8` for Flash Next, so four full 262,144-token windows fit; the fp8 reader keeps the next
+    tile in registers and the MTP head's cache stays bf16 while it fits (the v1.1.4 series' 0003 and 0005, rebased onto 1.3.3's paged and lane-batched
+    attention). MiaAI-Lab; the format is adapted from
     MiaAI-Lab's GLM recipe patch `0038-glm-kv-fp8` in
     [GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold).
-  - `0004-prompt-mxfp8-tile`: prompt passes run the wide MXFP8 projections on a 128 x 128 tile (64 x 64 for short calls) with the block scales folded
-    into the weights (the v1.1.4 series' 0006 and 0015, ported to v1.2.7's qmmf lane; the 64 x 64 form is new). MiaAI-Lab, built on TensorFold's qmmf
+  - `0003-prompt-mxfp8-tile`: prompt passes run the wide MXFP8 projections on a 128 x 128 tile (64 x 64 for short calls) with the block scales folded
+    into the weights (the v1.1.4 series' 0006 and 0015, ported to 1.3.3's qmmf lane; the 64 x 64 form is new). MiaAI-Lab, built on TensorFold's qmmf
     kernels and fragment helpers by Ash Hart and the TensorFold contributors.
+- **The vision tower and video patches are no longer here:** TensorFold 1.3.3 decodes the ModelOpt MXFP8/NVFP4 vision linears itself
+  (`zig/src/vision/qwen_cuda_dequant.zig`) and ships the CUDA video path, so the v1.2.7 series' `0001` and `0005` retired with the move to 1.3.3.
 - **The v1.1.4 series** (patches 0001 to 0017 on TensorFold v1.1.4, written by MiaAI-Lab, retired with the move to v1.2.7): v1.2.7 carries most of
   what 0004 and 0006 to 0017 did in TensorFold's own code, written by Ash Hart and the TensorFold contributors; TensorFold's K32 prompt expert staging
   is adapted from patch 0014 (credited in TensorFold's `THIRD_PARTY_NOTICES.md`). The series as it was: the prompt expert tile (0004), prefill kernels
@@ -140,8 +142,8 @@ This recipe no longer applies those patches (the serving path is the Zig engine)
   the operator are MiaAI-Lab's.
 - **[chai-md](https://github.com/chai-md)** wrote
   [#90](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold/pull/90), the video patch for the CUDA
-  engine: `patches/0005` is theirs, re-based onto TensorFold v1.2.7 by MiaAI-Lab (the field layout had moved and the patch
-  had to be re-split), with `VIDEO=1`, the pinned FFmpeg build and the tests MiaAI-Lab's.
+  engine that the recipe carried as `patches/0005` on v1.2.7; TensorFold 1.3.3 took the engine side in its own form, so
+  the patch retired. `VIDEO=1`, the pinned FFmpeg build and the tests are MiaAI-Lab's.
 - The scripts (`start.sh`, `stop.sh`, `scripts/`) and the checks in `tools/` are MiaAI-Lab's. `client.py`,
   `needle.py`, `toolcheck.py` and `prompt_reuse.py` are adapted from MiaAI-Lab's two-Spark recipe
   [GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold);
