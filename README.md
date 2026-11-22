@@ -15,7 +15,7 @@
 
 Serve **Qwen3.8 Flash Next** from a single NVIDIA DGX Spark (GB10, 128 GB) through an OpenAI-compatible API. It runs
 [TensorFold](https://github.com/ashhart/TensorFold)'s Zig engine, `tensorfold-native` (release
-[v1.2.7](https://github.com/ashhart/TensorFold/releases/tag/v1.2.7), commit `93a2e93e`, with this recipe's patches on top), in NVIDIA's PyTorch container. One GPU,
+[v1.3.3](https://github.com/ashhart/TensorFold/releases/tag/v1.3.3), commit `1e4a32cb`, with this recipe's patches on top), in NVIDIA's PyTorch container. One GPU,
 with image input (`VISION=1`) and, with `VIDEO=1`, video too (see [Images and video](#images-and-video)). `VISION=0` serves text only.
 
 The default checkpoint is NVIDIA's FP4 QAD export: routed experts in NVFP4 (group size 16, CSF-compressed scale factors),
@@ -39,19 +39,19 @@ is unchanged.
 ## Performance
 
 > **The sparkDash tables below are the v1.1.4 build's** (TensorFold v1.1.4 with its patches `0001` to `0017`, 2026-10-27). The recipe now builds
-> TensorFold v1.2.7 with patches `0001` to `0005` ([What the patches are](#what-the-patches-are); the A/B below ran on `0001` to `0004`); sparkDash has not been
+> TensorFold v1.3.3 with patches `0001` to `0003` ([What the patches are](#what-the-patches-are)); sparkDash has not been
 > re-run on it. What has been
 > measured is an A/B of the two builds with `tools/bench_streams.py` on the same Spark (2026-11-12, defaults, greedy, 256 tokens, median of 3,
-> every stream the same prompt; v1.2.7 here with its default 1,536-row passes):
+> every stream the same prompt; v1.3.3 here with its default 1,536-row passes):
 >
-> | | v1.1.4 build | v1.2.7 build | Change |
+> | | v1.1.4 build | v1.3.3 build | Change |
 > | --- | ---: | ---: | ---: |
 > | Decode prose, 1 / 3 / 5 streams (total tok/s) | 57.8 / 133.4 / 167.9 | 58.5 / 156.1 / 230.1 | +1% / +17% / +37% |
 > | Decode code, 1 / 3 / 5 streams (total tok/s) | 48.2 / 104.0 / 141.3 | 51.9 / 138.8 / 206.8 | +8% / +33% / +46% |
 > | TTFT at 5 streams, prose / code (ms) | 440 / 372 | 177 / 173 | -60% / -53% |
 > | Prefill 4k / 31k / 126k tokens (tok/s) | 2,329 / 2,566 / 2,397 | 2,108 / 2,166 / 2,047 | -9% / -16% / -15% |
 >
-> With `TF_FLASHNEXT_CHUNK=3072` (now the recipe's default, as the v1.1.4 build had) v1.2.7 prefilled 2,143 / 2,252 / 2,140 tok/s. With patch `0004`
+> With `TF_FLASHNEXT_CHUNK=3072` (now the recipe's default, as the v1.1.4 build had) v1.3.3 prefilled 2,143 / 2,252 / 2,140 tok/s. With patch `0003`
 > (the MXFP8 prompt tile, ported 2026-11-13) it prefills **2,303 / 2,443 / 2,293 tok/s**, 1-5% behind the v1.1.4 build, and a 199,730-token prompt in
 > 95.7 s (v1.1.4: 100.7 s). Decode and time to first token are unchanged by `0004` and faster than v1.1.4 at every stream count.
 
@@ -512,10 +512,9 @@ Drafted replies are still checked: a drafted reply matches `"draft": false`.
 
 | Patch | What it does |
 | --- | --- |
-| `0001`, `0002` | the vision helper loads NVIDIA's quantized vision tower (MXFP8 attention, NVFP4 MLP and merger decoded to bf16 at load); image budget 16,384 tokens |
-| `0003` | `--kv-cache fp8` for Flash Next (one rank, contiguous caches): five full 262,144-token windows fit where bf16 fits three. The fp8 attention reader keeps the next tile in registers, and the MTP head's own cache stays bf16 while the stream fits its charge (the v1.1.4 build's 0003 and 0005, rebased onto v1.2.7's paged and lane-batched attention) |
-| `0004` | prompt passes run the MXFP8 projections 1,024 columns or wider on a 128 x 128 tile (64 x 64 for calls of 128 rows or fewer) that folds the block scales into the weights: one fp32 sum over K, 1.4-1.65x the exact kernels, prefill +7-9%. Prompt rows leave the exact kernels' bits (within their rounding bound; a row's bytes never depend on its chunk, so replies stay exact across drafting and batching); `TF_FLASHNEXT_PROMPT_MX128=0` turns it off (the v1.1.4 build's 0006 and 0015) |
-| `0005` | video parts on the CUDA engine: Flash Next offers the template's `<\|video_pad\|>` groups to the server (the sampler and patchifier are TensorFold's `core/qwen_vl/video.zig`, the same the Triton host runs) and the shared media plan reads a group of video rows beside image rows. Nothing decodes a video until `VIDEO=1` puts `libtfvideo.so` on the loader's path (chai-md's [#90](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold/pull/90), re-based onto v1.2.7 by MiaAI-Lab) |
+| `0001` | image budget 16,384 tokens (the vision tower's ModelOpt MXFP8/NVFP4 linears decode to bf16 at load upstream since 1.3.0) |
+| `0002` | `--kv-cache fp8` for Flash Next (one rank, contiguous caches): four full 262,144-token windows fit where bf16 fits three. The fp8 attention reader keeps the next tile in registers, and the MTP head's own cache stays bf16 while the stream fits its charge (the v1.1.4 build's 0003 and 0005, rebased onto 1.3.3's paged and lane-batched attention) |
+| `0003` | prompt passes run the MXFP8 projections 1,024 columns or wider on a 128 x 128 tile (64 x 64 for calls of 128 rows or fewer) that folds the block scales into the weights: one fp32 sum over K, 1.4-1.65x the exact kernels, prefill +7-9%. Prompt rows leave the exact kernels' bits (within their rounding bound; a row's bytes never depend on its chunk, so replies stay exact across drafting and batching); `TF_FLASHNEXT_PROMPT_MX128=0` turns it off (the v1.1.4 build's 0006 and 0015) |
 
 The v1.1.4 build carried seventeen patches. v1.2.7 has most of the rest itself, and the recipe sets its switches for them in `scripts/config.sh`:
 
